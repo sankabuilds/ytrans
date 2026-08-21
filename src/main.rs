@@ -1,8 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::json;
 use std::str::FromStr;
+
+mod args;
 
 #[derive(Deserialize)]
 struct TimelineItemViewModel {
@@ -19,6 +21,7 @@ struct TranscriptSegmentViewModelContainer {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 struct TranscriptSegmentViewModel {
     simple_text: String,
     timestamp_utf16_length: u16,
@@ -26,6 +29,8 @@ struct TranscriptSegmentViewModel {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = args::YTransArgs::init();
+
     let url = "https://www.youtube.com/youtubei/v1/get_panel?prettyPrint=false";
 
     let mut headers = HeaderMap::new();
@@ -39,6 +44,11 @@ async fn main() -> Result<()> {
         "user-agent",
         HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"),
     );
+
+    let params = args.links[0].get_params().context(format!(
+        "couldn't get params from the passed URL: {}",
+        args.links[0].raw_url.as_str()
+    ))?;
 
     let payload = json!({
         "context": {
@@ -66,7 +76,7 @@ async fn main() -> Result<()> {
             },
         },
         "panelId": "PAmodern_transcript_view",
-        "params": "qgkPCgtzcmFhaWQ0ZGdZdxgC"
+        "params": params
     });
 
     let response = reqwest::Client::new()
@@ -79,7 +89,9 @@ async fn main() -> Result<()> {
     let status = response.status();
     let text = response.text().await?;
 
-    println!("Status: {status}");
+    if status != 200 {
+        bail!("Request failed. Status Code: {}", status);
+    }
 
     let response = serde_json::Value::from_str(&text)?;
 
@@ -95,7 +107,7 @@ async fn main() -> Result<()> {
         )?;
 
         println!(
-            "[{}] {}",
+            "{}: {}",
             timeline_item.timestamp,
             timeline_item.content_items[0]
                 .transcript_segment_view_model
