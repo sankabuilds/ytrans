@@ -45,9 +45,9 @@ async fn main() -> Result<()> {
         HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"),
     );
 
-    let params = args.links[0].get_params().context(format!(
+    let params = args.link.get_params().context(format!(
         "couldn't get params from the passed URL: {}",
-        args.links[0].raw_url.as_str()
+        args.link.raw_url.as_str()
     ))?;
 
     let payload = json!({

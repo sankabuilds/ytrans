@@ -8,24 +8,21 @@ use reqwest::Url;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    /// Video link(s)
-    #[arg(required = true, num_args = 1.., value_name = "LINKS")]
-    pub link: Vec<Url>,
+    /// Video link
+    pub link: Url,
 }
 
 #[derive(Debug)]
 pub struct YTransArgs {
-    pub links: Vec<VideoUrl>,
+    pub link: VideoUrl,
 }
 
 impl YTransArgs {
     pub fn init() -> Self {
         Self {
-            links: Args::parse()
-                .link
-                .into_iter()
-                .map(|raw_url| VideoUrl { raw_url })
-                .collect(),
+            link: VideoUrl {
+                raw_url: Args::parse().link,
+            },
         }
     }
 }
