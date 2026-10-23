@@ -1,10 +1,16 @@
-use anyhow::{Context, Result, bail};
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{
+    StatusCode,
+    header::{HeaderMap, HeaderValue},
+};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::str::FromStr;
+use thiserror::Error;
 
 mod args;
+mod utils;
+
+use utils::{format, get_end};
 
 #[derive(Deserialize)]
 struct TimelineItemViewModel {
@@ -27,14 +33,155 @@ struct TranscriptSegmentViewModel {
     timestamp_utf16_length: u16,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+type Result<T> = std::result::Result<T, TranscriptError>;
+
+#[derive(Error, Debug)]
+enum TranscriptError {
+    #[error("serde error: {0}")]
+    SerdeError(#[from] serde_json::Error),
+
+    #[error("no chapters exist")]
+    NoChapters,
+
+    #[error("no segments exist")]
+    NoSegments,
+}
+
+struct Segment(TimelineItemViewModel);
+
+struct Transcript {
+    pub segments: Vec<Segment>,
+}
+
+impl Transcript {
+    fn new(text: &str) -> Result<Self> {
+        let seg_container = get_segments(text)?;
+
+        Ok(Self {
+            segments: seg_container,
+        })
+    }
+
+    fn print(&self) {
+        for segment in &self.segments {
+            println!(
+                "{}: {}",
+                segment.0.timestamp,
+                segment.0.content_items[0]
+                    .transcript_segment_view_model
+                    .simple_text
+            );
+        }
+    }
+
+    fn print_vtt(&self) {
+        println!("WEBVTT");
+        println!();
+
+        let timeline_item_list = &self.segments;
+
+        for (index, segment) in timeline_item_list.iter().enumerate() {
+            let start = &segment.0.timestamp;
+            let end = timeline_item_list
+                .get(index + 1)
+                .map(|next_segment| &next_segment.0.timestamp);
+
+            println!("{}", index + 1);
+            println!(
+                "{} --> {}",
+                format(start).unwrap(),
+                format(end.unwrap_or(&get_end(start).unwrap())).unwrap()
+            );
+            println!(
+                "{}",
+                segment.0.content_items[0]
+                    .transcript_segment_view_model
+                    .simple_text,
+            );
+            println!();
+        }
+    }
+}
+
+enum Chapter<'a> {
+    Single(&'a Vec<Value>),
+    Many(&'a Vec<Value>),
+}
+
+fn get_segments(text: &str) -> Result<Vec<Segment>> {
+    let response = serde_json::Value::from_str(text)?;
+
+    let chapters = {
+        let chapters = response["content"]["engagementPanelSectionListRenderer"]["content"]["sectionListRenderer"]
+            ["contents"].as_array().ok_or( TranscriptError::NoChapters)?;
+
+        if chapters.len() == 1 {
+            Chapter::Single(
+                chapters[0]["itemSectionRenderer"]["contents"]
+                    .as_array()
+                    .ok_or(TranscriptError::NoSegments)?,
+            )
+        } else if chapters.len() > 1 {
+            Chapter::Many(chapters)
+        } else {
+            return Err(TranscriptError::NoChapters);
+        }
+    };
+
+    parse_chapters(chapters)
+}
+
+fn parse_chapters(chapters: Chapter) -> Result<Vec<Segment>> {
+    let mut timeline_item_list: Vec<Segment> = Vec::new();
+
+    match chapters {
+        Chapter::Single(segs) => {
+            for seg in segs {
+                let timeline_item = serde_json::from_value::<TimelineItemViewModel>(
+                    seg["macroMarkersPanelItemViewModel"]["item"]["timelineItemViewModel"].clone(),
+                )?;
+
+                timeline_item_list.push(Segment(timeline_item));
+            }
+        }
+        Chapter::Many(chapters) => {
+            for chapter in chapters {
+                for seg in chapter["itemSectionRenderer"]["contents"]
+                    .as_array()
+                    .ok_or(TranscriptError::NoSegments)?
+                {
+                    let timeline_item = serde_json::from_value::<TimelineItemViewModel>(
+                        seg["macroMarkersPanelItemViewModel"]["item"]["timelineItemViewModel"]
+                            .clone(),
+                    )?;
+
+                    timeline_item_list.push(Segment(timeline_item));
+                }
+            }
+        }
+    }
+
+    Ok(timeline_item_list)
+}
+
+#[derive(Debug, Error)]
+enum YtTransError {
+    #[error("Request failed. Status Code: {0}")]
+    StatusNotOk(StatusCode),
+
+    #[error("Passed URL dones't contain the search parameter 'v'")]
+    InvalidUrl,
+
+    #[error("Request Failed. Reqwest Error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+}
+
+fn make_api_request() -> std::result::Result<String, YtTransError> {
     let args = args::YTransArgs::init();
 
     let url = "https://www.youtube.com/youtubei/v1/get_panel?prettyPrint=false";
 
     let mut headers = HeaderMap::new();
-
     headers.insert("content-type", HeaderValue::from_static("application/json"));
     headers.insert(
         "origin",
@@ -45,10 +192,7 @@ async fn main() -> Result<()> {
         HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"),
     );
 
-    let params = args.link.get_params().context(format!(
-        "couldn't get params from the passed URL: {}",
-        args.link.raw_url.as_str()
-    ))?;
+    let params = args.link.get_params().ok_or(YtTransError::InvalidUrl)?;
 
     let payload = json!({
         "context": {
@@ -79,40 +223,35 @@ async fn main() -> Result<()> {
         "params": params
     });
 
-    let response = reqwest::Client::new()
+    let response = reqwest::blocking::Client::new()
         .post(url)
         .headers(headers)
         .json(&payload)
-        .send()
-        .await?;
+        .send()?;
 
     let status = response.status();
-    let text = response.text().await?;
+    let text = response.text()?;
 
-    if status != 200 {
-        bail!("Request failed. Status Code: {}", status);
+    if status != StatusCode::OK {
+        return Err(YtTransError::StatusNotOk(status));
     }
 
-    let response = serde_json::Value::from_str(&text)?;
+    Ok(text)
+}
 
-    let contents =
-        response["content"]["engagementPanelSectionListRenderer"]["content"]["sectionListRenderer"]
-            ["contents"][0]["itemSectionRenderer"]["contents"]
-            .as_array()
-            .context("no contents found in the response")?;
+fn main() -> anyhow::Result<()> {
+    let text = make_api_request()?;
+    let transcript = Transcript::new(&text)?;
 
-    for item in contents {
-        let timeline_item = serde_json::from_value::<TimelineItemViewModel>(
-            item["macroMarkersPanelItemViewModel"]["item"]["timelineItemViewModel"].clone(),
-        )?;
-
-        println!(
-            "{}: {}",
-            timeline_item.timestamp,
-            timeline_item.content_items[0]
-                .transcript_segment_view_model
-                .simple_text
-        );
+    let args = args::YTransArgs::init();
+    if let Some(f) = args.format {
+        match f {
+            args::Format::Vtt => {
+                transcript.print_vtt();
+            }
+        }
+    } else {
+        transcript.print();
     }
 
     Ok(())

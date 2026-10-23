@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use base64::{Engine, engine::general_purpose};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use reqwest::Url;
 
 /// Simple program to get transcripts of YouTube videos
@@ -10,19 +10,30 @@ use reqwest::Url;
 pub struct Args {
     /// Video link
     pub link: Url,
+
+    #[arg(short, long, value_enum)]
+    pub format: Option<Format>,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+pub enum Format {
+    /// WebVTT
+    Vtt,
 }
 
 #[derive(Debug)]
 pub struct YTransArgs {
     pub link: VideoUrl,
+    pub format: Option<Format>,
 }
 
 impl YTransArgs {
     pub fn init() -> Self {
+        let args = Args::parse();
+
         Self {
-            link: VideoUrl {
-                raw_url: Args::parse().link,
-            },
+            link: VideoUrl { raw_url: args.link },
+            format: args.format,
         }
     }
 }
