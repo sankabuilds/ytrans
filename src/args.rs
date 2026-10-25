@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+use std::path::{Path, PathBuf};
+
 use base64::{Engine, engine::general_purpose};
 use clap::{Parser, ValueEnum};
 use reqwest::Url;
@@ -13,6 +15,9 @@ pub struct Args {
 
     #[arg(short, long, value_enum)]
     pub format: Option<Format>,
+
+    #[arg(short, long)]
+    pub output_dir: Option<PathBuf>,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -25,6 +30,7 @@ pub enum Format {
 pub struct YTransArgs {
     pub link: VideoUrl,
     pub format: Option<Format>,
+    pub output: Option<PathBuf>,
 }
 
 impl YTransArgs {
@@ -34,6 +40,7 @@ impl YTransArgs {
         Self {
             link: VideoUrl { raw_url: args.link },
             format: args.format,
+            output: args.output_dir,
         }
     }
 }

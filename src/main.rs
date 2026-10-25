@@ -1,10 +1,11 @@
+use anyhow::anyhow;
 use reqwest::{
     StatusCode,
     header::{HeaderMap, HeaderValue},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::str::FromStr;
+use std::{fs, io::Write, path::Path, str::FromStr};
 use thiserror::Error;
 
 mod args;
@@ -62,21 +63,24 @@ impl Transcript {
         })
     }
 
-    fn print(&self) {
+    fn print(&self, mut w: impl Write) -> std::io::Result<()> {
         for segment in &self.segments {
-            println!(
+            writeln!(
+                w,
                 "{}: {}",
                 segment.0.timestamp,
                 segment.0.content_items[0]
                     .transcript_segment_view_model
                     .simple_text
-            );
+            )?;
         }
+
+        Ok(())
     }
 
-    fn print_vtt(&self) {
-        println!("WEBVTT");
-        println!();
+    fn print_vtt(&self, mut w: impl Write) -> std::io::Result<()> {
+        writeln!(w, "WEBVTT")?;
+        writeln!(w)?;
 
         let timeline_item_list = &self.segments;
 
@@ -86,20 +90,24 @@ impl Transcript {
                 .get(index + 1)
                 .map(|next_segment| &next_segment.0.timestamp);
 
-            println!("{}", index + 1);
-            println!(
+            writeln!(w, "{}", index + 1)?;
+            writeln!(
+                w,
                 "{} --> {}",
                 format(start).unwrap(),
                 format(end.unwrap_or(&get_end(start).unwrap())).unwrap()
-            );
-            println!(
+            )?;
+            writeln!(
+                w,
                 "{}",
                 segment.0.content_items[0]
                     .transcript_segment_view_model
                     .simple_text,
-            );
-            println!();
+            )?;
+            writeln!(w)?;
         }
+
+        Ok(())
     }
 }
 
@@ -240,18 +248,61 @@ fn make_api_request() -> std::result::Result<String, YtTransError> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let args = args::YTransArgs::init();
+    let output_file = {
+        match args.output {
+            Some(output_dir) => {
+                if output_dir.is_dir() {
+                    let file_name = Path::new(args.link.get_v().ok_or(anyhow!(
+                        "URL invalid, doesn't contain the search parameter: 'v'"
+                    ))?);
+
+                    let ext = if let Some(format) = &args.format {
+                        match format {
+                            args::Format::Vtt => "vtt",
+                        }
+                    } else {
+                        "txt"
+                    };
+
+                    let file_name_with_ext = file_name.with_extension(ext);
+
+                    let f = fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(output_dir.join(file_name_with_ext))?;
+
+                    Some(f)
+                } else {
+                    return Err(anyhow!(
+                        "output directory is not valid: {}",
+                        output_dir.display()
+                    ));
+                }
+            }
+            None => None,
+        }
+    };
+
     let text = make_api_request()?;
     let transcript = Transcript::new(&text)?;
 
-    let args = args::YTransArgs::init();
     if let Some(f) = args.format {
         match f {
             args::Format::Vtt => {
-                transcript.print_vtt();
+                if let Some(file) = output_file {
+                    transcript.print_vtt(file)?;
+                } else {
+                    transcript.print_vtt(std::io::stdout())?;
+                }
             }
         }
     } else {
-        transcript.print();
+        if let Some(file) = output_file {
+            transcript.print(file)?;
+        } else {
+            transcript.print(std::io::stdout())?;
+        }
     }
 
     Ok(())
